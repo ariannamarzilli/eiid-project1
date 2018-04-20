@@ -12,6 +12,77 @@
 #include "3rdparty/aiacommon/aiaConfig.h"
 #include "3rdparty/ucascommon/ucasFileUtils.h"
 
+
+// utility function that rotates 'img' by step*90°
+// step = 0 --> no rotation
+// step = 1 --> 90° CW rotation
+// step = 2 --> 180° CW rotation
+// step = 3 --> 270° CW rotation
+cv::Mat rotate90(cv::Mat img, int step)
+{
+    cv::Mat img_rot;
+
+    // adjust step in case it is negative
+    if(step < 0)
+        step = -step;
+    // adjust step in case it exceeds 4
+    step = step%4;
+
+    // no rotation
+    if(step == 0)
+        img_rot = img;
+        // 90° CW rotation
+    else if(step == 1)
+    {
+        cv::transpose(img, img_rot);
+        cv::flip(img_rot, img_rot, 1);
+    }
+        // 180° CW rotation
+    else if(step == 2)
+        cv::flip(img, img_rot, -1);
+        // 270° CW rotation
+    else if(step == 3)
+    {
+        cv::transpose(img, img_rot);
+        cv::flip(img_rot, img_rot, 0);
+    }
+
+    return img_rot;
+}
+
+
+// create 'n' rectangular Structuring Elements (SEs) at different orientations spanning the whole 360°
+// return vector of 'width' x 'width' uint8 binary images with non-black pixels being the SE
+// parameter width: SE width (must be odd)
+// parameter height: SE height (must be odd)
+// parameter n: number of SEs
+std::vector<cv::Mat> createTiltedStructuringElements(int width, int height, int n) throw (ucas::Error) {
+    // check preconditions
+    if( width%2 == 0 )
+        throw ucas::Error(ucas::strprintf("Structuring element width (%d) is not odd", width));
+    if( height%2 == 0 )
+        throw ucas::Error(ucas::strprintf("Structuring element height (%d) is not odd", height));
+
+    // draw base SE along x-axis
+    cv::Mat base(width, width, CV_8U, cv::Scalar(0));
+    // workaround: cv::line does not work properly when thickness > 1. So we draw line by line.
+    for(int k=width/2-height/2; k<=width/2+height/2; k++)
+        cv::line(base, cv::Point(0,k), cv::Point(width, k), cv::Scalar(255));
+
+    // compute rotated SEs
+    std::vector <cv::Mat> SEs;
+    SEs.push_back(base);
+    double angle_step = 180.0/n;
+    for(int k=1; k<n; k++)
+    {
+        cv::Mat SE;
+        cv::warpAffine(base, SE, cv::getRotationMatrix2D(cv::Point2f(base.cols/2.0f, base.rows/2.0f), k*angle_step, 1.0), cv::Size(width, width), CV_INTER_NN);
+        SEs.push_back(SE);
+    }
+
+    return SEs;
+}
+
 // retrieves and loads all images within the given folder and having the given file extension
 std::vector < cv::Mat > getImagesInFolder(std::string folder, std::string ext = ".tif", bool force_gray = false) throw (aia::error)
 {
@@ -189,54 +260,14 @@ cv::Mat rotate(cv::Mat src, double angle) {
     return dst;
 }
 
-namespace eiid {
-
-    using namespace cv;
-
-    void equalizeHistWithMask(const Mat1b& src, Mat& dst, Mat1b mask = Mat1b())
-    {
-        int cnz = countNonZero(mask);
-        if (mask.empty() || ( cnz == src.rows*src.cols))
-        {
-            equalizeHist(src, dst);
-            return;
-        }
-
-        dst = src.clone();
-
-        // Histogram
-        std::vector<int> hist(256,0);
-        for (int r = 0; r < src.rows; ++r) {
-            for (int c = 0; c < src.cols; ++c) {
-                if (mask(r, c)) {
-                    hist[src(r, c)]++;
-                }
-            }
-        }
-
-        // Cumulative histogram
-        float scale = 255.f / float(cnz);
-        std::vector<uchar> lut(256);
-        int sum = 0;
-        for (int i = 0; i < hist.size(); ++i) {
-            sum += hist[i];
-            lut[i] = saturate_cast<uchar>(sum * scale);
-        }
-
-        // Apply equalization
-        for (int r = 0; r < src.rows; ++r) {
-            for (int c = 0; c < src.cols; ++c) {
-                if (mask(r, c)) {
-                    dst.at<unsigned char>(r, c) = lut[src(r,c)];
-                }
-            }
-        }
-    }
-}
 
 int main()
 {
     try {
+
+        // UNA SOLA IMMAGINE
+
+
         /*cv::Mat image = cv::imread("C:/Users/utente/Downloads/AIA-Retinal-Vessel-Segmentation-20180409T200855Z-001/AIA-Retinal-Vessel-Segmentation/datasets/DRIVE/images/01.tif", CV_LOAD_IMAGE_UNCHANGED);
         cv::Mat mask = cv::imread("C:/Users/utente/Downloads/AIA-Retinal-Vessel-Segmentation-20180409T200855Z-001/AIA-Retinal-Vessel-Segmentation/datasets/DRIVE/masks/01_mask.tif", CV_LOAD_IMAGE_GRAYSCALE);
         cv::Mat ground_truth = cv::imread("C:/Users/utente/Downloads/AIA-Retinal-Vessel-Segmentation-20180409T200855Z-001/AIA-Retinal-Vessel-Segmentation/datasets/DRIVE/groundtruths/01_manual1.tif", CV_LOAD_IMAGE_GRAYSCALE);
@@ -348,7 +379,7 @@ int main()
         std::vector<cv::Mat> results;
 
         // dummy segmentation: thresholding / binarization
-        for(int i = 0; i < images.size(); i++)
+        for(int i = 0; i < 1; i++)
         {
             std::vector<cv::Mat> channels;
 
@@ -358,34 +389,65 @@ int main()
             green_channel.convertTo(green_channel, CV_8U);
             truths[i].convertTo(truths[i], CV_8U);
 
+            //aia::imshow("mask prima", masks[i]);
+
             // NOISE REDUCTION
 
             cv::fastNlMeansDenoising(green_channel, green_channel, 3);
-
             //aia::imshow("denoising", green_channel);
 
             // TOP-HAT TRANSFORM
-
+/*
             cv::Mat green_channel_reverse = 255 - green_channel;
 
             //aia::imshow("green_channel_reverse", green_channel_reverse);
 
             cv::Mat dest, THTransform;
+            std::vector<cv::Mat> tiltedSE ;
+            tiltedSE = createTiltedStructuringElements(21, 23, 4);
 
-            cv::morphologyEx(green_channel_reverse, dest, cv::MORPH_TOPHAT, cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(20, 20)));
+            for (int i = 0; i < tiltedSE.size(); i++) {
+                cv::morphologyEx(green_channel_reverse, dest, cv::MORPH_TOPHAT, tiltedSE[i]);
+            }
 
             THTransform = green_channel_reverse - dest;
 
             cv::Mat foundRegion = 10 * (green_channel_reverse - THTransform);
 
             //aia::imshow("found region", THTransform);
+*/
+            // SUM TOP HAT
 
+
+            cv::Mat green_channel_reverse = 255 - green_channel;    // immagine invertita: vasi più chiari del background
+            cv::Mat top_hat, THTransform;
+            top_hat = cv::Mat::zeros(cv::Size(999, 960), 0);
+
+            std::vector<cv::Mat> tiltedSE ;
+            tiltedSE = createTiltedStructuringElements(21, 21, 2);
+
+            cv::Mat dest;
+
+            for (int i = 0; i < tiltedSE.size(); i++) {
+                cv::morphologyEx(green_channel_reverse, dest, cv::MORPH_TOPHAT, tiltedSE[i]);    // la white top hat enfatizza oggetti più chiari rispetto al vicinato e contenuti nello SE
+                top_hat = top_hat + dest;
+            }
+
+            //aia::imshow("top hat", top_hat);
+
+            THTransform = green_channel_reverse - top_hat;
+            //aia::imshow("THTransform", THTransform);
+
+            cv::Mat foundRegion = (green_channel_reverse - THTransform);
+            //aia::imshow("foundRegion", foundRegion);
+
+
+/*
             // RECONSTRUCTION
             cv::Mat tophat = foundRegion.clone();
             cv::Mat marker;
-            cv::morphologyEx(green_channel_reverse, marker, CV_MOP_OPEN, cv::getStructuringElement(CV_SHAPE_ELLIPSE, cv::Size(50,50)));
+            cv::morphologyEx(foundRegion, marker, CV_MOP_OPEN, cv::getStructuringElement(CV_SHAPE_ELLIPSE, cv::Size(20,20)));
             //aia::imshow("Marker", marker);
-            //cv::imwrite(std::string(EXAMPLE_IMAGES_PATH) + "/galaxy_marker.jpg", marker);
 
 
             cv::Mat marker_prev;
@@ -397,7 +459,7 @@ int main()
 
                 // geodesic dilation ( = dilation + pointwise minimum with mask)
                 cv::morphologyEx(marker, marker, CV_MOP_DILATE, cv::getStructuringElement(CV_SHAPE_RECT, cv::Size(3,3)));
-                marker = cv::min(marker, green_channel_reverse);
+                marker = cv::min(marker, foundRegion);
 
                 // display reconstruction in progress
                // printf("it = %d\n", ++it);
@@ -407,17 +469,30 @@ int main()
             while( cv::countNonZero(marker - marker_prev) > 0) ;
 
             //aia::imshow("Reconstructed", marker);
-            foundRegion = (green_channel_reverse - marker);
+            foundRegion = (foundRegion - marker);
             //aia::imshow("G - reconstructed", foundRegion);
 
             foundRegion = 0.30 * tophat + 0.70 * foundRegion;
 
             //aia::imshow("somma pesata", foundRegion);
+*/
+
+            //aia::imshow("internal mask", foundRegion);
+
+            // NOISE REDUCTION
+
+            cv::fastNlMeansDenoising(foundRegion, foundRegion, 3);
+            //aia::imshow("noise reduction 2", foundRegion);
+
+            // EROSIONE MASCHERA
+
+            cv::morphologyEx(masks[i], masks[i], CV_MOP_ERODE, cv::getStructuringElement(CV_SHAPE_ELLIPSE, cv::Size(20,20)));
+
+            //aia::imshow("mask dopo", masks[i]);
 
             // ESTRAZIONE FOV
 
-            /*for (int y = 0; y < foundRegion.rows; y++) {
-
+            for (int y = 0; y < foundRegion.rows; y++) {
                 unsigned char* yRowFound = foundRegion.ptr<unsigned char>(y);
                 unsigned char* yRowMask = masks[i].ptr<unsigned char>(y);
 
@@ -428,44 +503,38 @@ int main()
                         yRowFound[x] = 0;
                     }
                 }
-            }*/
-
-            //aia::imshow("internal mask", foundRegion);
-
-            // NOISE REDUCTION
-
-            cv::fastNlMeansDenoising(foundRegion, foundRegion, 3);
-            //aia::imshow("noise reduction", foundRegion);
+            }
 
 
             //THRESHOLDING
-
+            
             cv::Mat thresholded;
 
             cv::threshold(foundRegion, thresholded, 0, 255, CV_THRESH_BINARY | CV_THRESH_OTSU);
 
             //aia::imshow("binarizzazione", thresholded);
 
-            //aia::imshow("opening", thresholded);
-
             results.push_back(thresholded);
             printf("%d\n", i);
-        }
 
+
+
+        }
+/*
         std::vector <cv::Mat> visual_results;
         double ACC = accuracy(results, truths, masks, &visual_results);
-        printf("Accuracy (dummy segmentation) = %.2f%%\n", ACC*100);
+        printf("Accuracy = %.2f%%\n", ACC*100);
 
         for (int i = 0; i < visual_results.size(); i++) {
 
-            std::string pathName = "/Users/Mariangela/Desktop/Università/Magistrale/1 anno - 2 semestre/EIID/AIA-Retinal-Vessel-Segmentation/datasets/CHASEDB1/results/" + std::to_string(i+1) + ".tif";
-            cv::imwrite(pathName, visual_results[i]);
+            std::string pathNameVisualResults = "/Users/Mariangela/Desktop/Università/Magistrale/1 anno - 2 semestre/EIID/AIA-Retinal-Vessel-Segmentation/datasets/CHASEDB1/results/" + std::to_string(i+1) + ".tif";
+            cv::imwrite(pathNameVisualResults, visual_results[i]);
+
+            std::string pathNameSegmentationResults = "/Users/Mariangela/Desktop/Università/Magistrale/1 anno - 2 semestre/EIID/AIA-Retinal-Vessel-Segmentation/datasets/CHASEDB1/results_binarization/" + std::to_string(i+1) + ".tif";
+            cv::imwrite(pathNameSegmentationResults, results[i]);
+
         }
-
-        // ideal segmentation: use the groundtruth (we should get 100% accuracy)
-        ACC = accuracy(truths, truths, masks);
-        printf("Accuracy (ideal segmentation) = %.2f%%\n", ACC*100);
-
+*/
         return 1;
 
     }
