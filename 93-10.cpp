@@ -7,6 +7,8 @@
 #include <opencv/cv.hpp>
 #include <list>
 #include "3rdparty/aiacommon/aiaConfig.h"
+#include "3rdparty/ucascommon/ucasExceptions.h"
+#include "3rdparty/ucascommon/ucasStringUtils.h"
 #include "3rdparty/ucascommon/ucasFileUtils.h"
 
 #define DRIVE_PATH "/Users/Mariangela/Desktop/Università/Magistrale/1 anno - 2 semestre/EIID/AIA-Retinal-Vessel-Segmentation/datasets/DRIVE/"
@@ -85,11 +87,14 @@ cv::Mat rotate90(cv::Mat img, int step)
 // parameter n: number of SEs
 std::vector<cv::Mat> createTiltedStructuringElements(int width, int height, int n) throw (ucas::Error) {
     // check preconditions
-    if( width%2 == 0 )
+    if (width % 2 == 0) {
+        printf("errore\n");
         throw ucas::Error(ucas::strprintf("Structuring element width (%d) is not odd", width));
-    if( height%2 == 0 )
+    }
+    if (height % 2 == 0) {
+        printf("errore\n");
         throw ucas::Error(ucas::strprintf("Structuring element height (%d) is not odd", height));
-
+    }
     // draw base SE along x-axis
     cv::Mat base(width, width, CV_8U, cv::Scalar(0));
     // workaround: cv::line does not work properly when thickness > 1. So we draw line by line.
@@ -298,7 +303,7 @@ std::list<cv::Point> endPoint(cv::Mat mat){
         cv::dilate(junctions, junctions, cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(7,7)));
         cv::cvtColor(img, img, cv::COLOR_GRAY2BGR);
         img.setTo(cv::Scalar(0, 0, 255), junctions);
-        aia::imshow("result", img);
+       // aia::imshow("result", img);
 
         return endPointList;
     }
@@ -456,10 +461,27 @@ double accuracy(
     return (TP + TN) / N;	// according to the definition of Accuracy
 }
 
+void fun() {
 
+    cv::Mat img = cv::imread("/Users/Mariangela/Desktop/roi.tif", CV_LOAD_IMAGE_GRAYSCALE);
+
+    cv::fastNlMeansDenoising(img, img);
+
+    cv::Ptr<cv::CLAHE> clahe = cv::createCLAHE();
+    clahe -> setTilesGridSize(cv::Size(img.cols/7, img.rows/7));
+    clahe -> apply(img, img);
+
+    cv::morphologyEx(img, img, CV_MOP_ERODE, cv::getStructuringElement(CV_SHAPE_ELLIPSE, cv::Size(3,3)));
+
+    cv::threshold(img, img, 0, 255, CV_THRESH_BINARY_INV | CV_THRESH_OTSU);
+
+    aia::imshow("CLAHE", img);
+}
 
 int main() {
 
+    //fun();
+    //getchar();
 
     std::string datasetPath = DRIVE_PATH;
     std::vector <cv::Mat> images = getImagesInFolder(datasetPath + "images",DRIVE_EXTENSION);
@@ -475,7 +497,7 @@ int main() {
         ///GREEN CHANNEL EXTRACTION
         std::vector<cv::Mat> channels;
         cv::split(images[i], channels);
-        cv::Mat green_channel = channels[1].clone();
+        cv::Mat green_channel = channels[1].clone(); cv::Mat greenChannelOri = green_channel.clone();
         //aia::imshow("green channel", green_channel);
 
         green_channel.convertTo(green_channel, CV_8U);
@@ -489,6 +511,7 @@ int main() {
         channels.clear();
         cv::split(truthsMultiChannel[i], channels);
         truths.push_back(channels[0]);
+
 
 
         ///ELIMINATE IRREGULAR BRIGHT REGIONS
@@ -524,7 +547,7 @@ int main() {
         reconstruction = (reconstruction - marker);
         //aia::imshow("G - reconstructed", reconstruction);
 
-
+        //green_channel = green_channel - reconstruction;
 
         green_channel = marker.clone();
 
@@ -541,7 +564,7 @@ int main() {
         top_hat = cv::Mat::zeros(images[i].size(), 0);
 
         std::vector<cv::Mat> tiltedSE ;
-        tiltedSE = createTiltedStructuringElements(DRIVE_SE_SIZE_SUMTOPHAT, DRIVE_SE_SIZE_SUMTOPHAT, 18);
+        tiltedSE = createTiltedStructuringElements(3, 9, 18);
         cv::Mat dest;
 
         for (int i = 0; i < tiltedSE.size(); i++) {
@@ -553,9 +576,9 @@ int main() {
         cv::Mat foundRegion = (green_channel_reverse - THTransform);
         //aia::imshow("top hat", top_hat);
         //aia::imshow("THTransform", THTransform);
-        //aia::imshow("foundRegion", foundRegion);
-
-
+        aia::imshow("foundRegion", foundRegion);
+        //cv::imwrite("/Users/Mariangela/Desktop/Università/Magistrale/1 anno - 2 semestre/EIID/AIA-Retinal-Vessel-Segmentation/datasets/DRIVE/sum top hat 17 17/img.tif", foundRegion);
+        //getchar();
 
         ///NOISE REDUCTION
         cv::fastNlMeansDenoising(foundRegion, foundRegion, 3);
@@ -588,10 +611,9 @@ int main() {
         ///THRESHOLDING
         cv::Mat thresholded;
         cv::threshold(foundRegion, thresholded, 0, 255, CV_THRESH_BINARY | CV_THRESH_OTSU);
-        //aia::imshow("binarizzazione", thresholded);
+      //  aia::imshow("binarizzazione", thresholded);
 
         results.push_back(thresholded);
-
 
 
         ///ENDPOINT FINDER
@@ -605,77 +627,33 @@ int main() {
 
             if (!(p.x - DRIVE_ROI/2 < 0 || p.y - DRIVE_ROI/2 < 0 || p.x + DRIVE_ROI/2 >= images[i].cols || p.y + DRIVE_ROI/2 >= images[i].rows)) {
 
-                cv::Mat roiThresholded = thresholded(cv::Rect(p.x - DRIVE_ROI/2, p.y - DRIVE_ROI/2, DRIVE_ROI, DRIVE_ROI));
-                cv::Mat roiImg = images[i](cv::Rect(p.x - DRIVE_ROI/2, p.y - DRIVE_ROI/2, DRIVE_ROI, DRIVE_ROI));
-               // cv::Mat roiImg = foundRegion(cv::Rect(p.x - DRIVE_ROI/2, p.y - DRIVE_ROI/2, DRIVE_ROI, DRIVE_ROI));
+                cv::Mat gc = greenChannelOri.clone();
 
-                aia::imshow("Roi Bin first", roiThresholded, false);
-                aia::imshow("Roi Img first", roiImg, false);
+                cv::Mat img = gc(cv::Rect(p.x - DRIVE_ROI/2, p.y - DRIVE_ROI/2, DRIVE_ROI, DRIVE_ROI));
+                cv::Mat binRoi = thresholded(cv::Rect(p.x - DRIVE_ROI/2, p.y - DRIVE_ROI/2, DRIVE_ROI, DRIVE_ROI));
 
-                cv::pyrMeanShiftFiltering(roiImg, roiImg, 3, 3);
+                aia::imshow("img", img, false);
 
-                aia::imshow("Roi Bin then ", roiImg);
-                /*cv::Mat tmp = roiThresholded.clone();
+                cv::fastNlMeansDenoising(img, img);
 
-                for (int y = 0; y < roiThresholded.rows; y++) {
+                cv::Ptr<cv::CLAHE> clahe = cv::createCLAHE();
+                clahe -> setTilesGridSize(cv::Size(img.cols/4, img.rows/4));
+                clahe -> apply(img, img);
 
-                    unsigned char* yRowThresholded = roiThresholded.ptr<unsigned char>(y);
-                    unsigned char* yRowTmp = tmp.ptr<unsigned char>(y);
-                    unsigned char* yRowFound = roiImg.ptr<unsigned char>(y);
+                cv::morphologyEx(img, img, CV_MOP_ERODE, cv::getStructuringElement(CV_SHAPE_ELLIPSE, cv::Size(3,3)));
 
-                    for (int x = 0; x < roiThresholded.cols; x++) {
+                cv::threshold(img, img, 0, 255, CV_THRESH_BINARY_INV | CV_THRESH_OTSU);
 
-                        if (yRowThresholded[x] == 255) {
+                binRoi = binRoi + img;
 
-                            yRowTmp[x] = yRowFound[x];
-                        }
-                    }
-                }
-
-                aia::imshow("tmp", tmp, false);
-
-                cv::Mat diff = roiImg - tmp;
-                aia::imshow("dif", diff, false);
-
-                int thresh = 60;
-                cv::Canny(diff, diff, thresh, 3*thresh);
-
-                cv::Mat result = roiThresholded + diff;
-                aia::imshow("dif", result);
-                //cv::imwrite("/Users/Mariangela/Desktop/roi.png", diff);
-                getchar();*/
-
-                ///SUM TOP HAT
-                /*cv::Mat roi_reverse = 255 - roiImg;
-                cv::Mat top_hat_roi, THTransform_roi;
-                top_hat_roi = cv::Mat::zeros(roiImg.size(), 0);
-
-                std::vector<cv::Mat> tiltedSE_roi ;
-                tiltedSE_roi = createTiltedStructuringElements(3, 3, 18);
-                cv::Mat dest_roi;
-
-                for (int i = 0; i < tiltedSE_roi.size(); i++) {
-                    cv::morphologyEx(roi_reverse, dest_roi, cv::MORPH_TOPHAT, tiltedSE_roi[i]);
-                    top_hat_roi = top_hat_roi + dest_roi;
-                }
-
-                THTransform_roi = roi_reverse - top_hat_roi;
-                cv::Mat foundRegion_roi = (roi_reverse - THTransform_roi);
-
-                cv::Mat roiThresholdedDest;
-
-                cv::threshold(foundRegion_roi, roiThresholdedDest, 0, 255, CV_THRESH_BINARY | CV_THRESH_OTSU);
-
-                aia::imshow("Roi Img then", foundRegion_roi, false);
-                aia::imshow("Roi Bin then", roiThresholdedDest);
-
-                //roiThresholdedDest += roiThresholded;
-
-                //aia::imshow("result", roiThresholded);*/
+                //aia::imshow("AAA", binRoi);
+                //aia::imshow("img", img);
             }
         }
 
         std::cout << i << std::endl;
+
+        aia::imshow("binarizzazione", thresholded);
     }
 
 
