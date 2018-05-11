@@ -379,12 +379,13 @@ double accuracy(
 
 std::vector<std::vector <cv::Point> > myWatershed(cv::Mat img, cv::Mat origin) {
 
-    float scaling_factor = 1; int radius = 5; int offset = 50;
+    float scaling_factor = 1; int radius = 5; int offset = 0; int pointOffset = 0;
     //aia::imshow("Mammogram", img, true, scaling_factor);
 
     //generating internal marker
     cv::Mat internal_markers = cv::Mat(img.rows, img.cols, CV_8U, cv::Scalar(0));
-    cv::circle(internal_markers, cv::Point(radius , radius), radius, cv::Scalar(255), -1);
+    cv::line(internal_markers, cv::Point(radius + pointOffset, radius+ pointOffset), cv::Point(radius + pointOffset, radius + pointOffset + 160), cv::Scalar(255), radius);
+    //cv::circle(internal_markers, cv::Point(radius , radius), radius, cv::Scalar(255), -1);
    // aia::imshow("Internal marker", internal_markers, true, scaling_factor);
 
     //generating external marker
@@ -467,6 +468,64 @@ cv::Mat roiGen(cv::Mat img, cv::Mat mask) {
     return img(cv::Rect(0, 0, xPos, yPos));
 }
 
+cv::Mat createMask(cv::Mat img, std::vector<std::vector<cv::Point> > contours) {
+
+    cv::Mat bin = cv::Mat(img.rows, img.cols, CV_8U, cv::Scalar(0)); bool foundPick = false;
+
+    //cv::drawContours(bin, contours, 0, cv::Scalar(255), 1);
+    cv::Point endPoint;
+
+    // Cerco lungo il contorno individuato finchË non trovo il punto estremo. In generale non corrisponde all'ultimo elemento del vettore di contorni
+    // individauti dato il modo in cui Ë implementato cv::findContours(...)
+
+    for (int i = 1; i < contours[0].size() - 1 && !foundPick; i++) {
+
+        if (bin.at<unsigned char>(contours[0][i - 1]) == 255 && bin.at<unsigned char>(contours[0][i + 1]) == 255) {
+
+            endPoint = contours[0][i]; std::cout << contours[0][i] << std::endl;
+            foundPick = true;
+        }
+        cv::circle(bin, contours[0][i], 0.5, cv::Scalar(255), -1);
+        //aia::imshow("bin", bin);
+    }
+
+    cv::drawContours(bin, contours, 0, cv::Scalar(255), 1);
+    //aia::imshow("bin1", bin);
+    cv::line(bin, cv::Point(1, 1), endPoint, cv::Scalar(255), 1);
+    //aia::imshow("bin2", bin);
+    cv::line(bin, cv::Point(1, 1), contours[0][0], cv::Scalar(255), 1);
+    //aia::imshow("bin3", bin);
+    contours.clear();
+    cv::findContours(bin, contours, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_NONE);
+    cv::drawContours(bin, contours, 0, cv::Scalar(255), -1);
+
+    //aia::imshow("bin4", bin);
+    return bin;
+}
+
+cv::Mat copyMask(cv::Mat mask, int rows, int cols) {
+
+    cv::Mat img = cv::Mat(rows, cols, CV_8U, cv::Scalar(0));
+
+    for (int y = 0; y < mask.rows; y++) {
+
+        unsigned char *yRowMask = mask.ptr<unsigned char>(y);
+        unsigned char *yRowImg = img.ptr<unsigned char>(y);
+
+        for (int x = 0; x < mask.cols; x++) {
+
+            if (yRowMask[x] == 255) {
+
+                yRowImg[x] = 255;
+            }
+        }
+    }
+
+
+    return img;
+}
+
+
 int main() {
 
     try {
@@ -477,19 +536,23 @@ int main() {
         std::vector <cv::Mat> images = getImagesInFolder(datasetPath + "images", "tif");
         std::vector <cv::Mat> truths = getImagesInFolder(datasetPath + "groundtruths", "tif");
         std::vector <cv::Mat> masks = getImagesInFolder(datasetPath + "masks", "png");
-        std::vector <cv::Mat> results; bool toFlip = false;
+        std::vector <cv::Mat> results; bool toFlip = false; float resizeFactor = 0.2;
 
-        //cv::Mat dummy = cv::imread(std::string(DATASET_PATH) + std::string("images/24055464_ac3185e18ffdc7b6_MG_R_ML_ANON.tif"), CV_LOAD_IMAGE_UNCHANGED);
-        //images.push_back(dummy);
-        //dummy = cv::imread(std::string(DATASET_PATH) + std::string("masks/24055464_ac3185e18ffdc7b6_MG_R_ML_ANON.mask.png"), CV_LOAD_IMAGE_UNCHANGED);
-        //masks.push_back(dummy);
+        /*
+        cv::Mat dummy = cv::imread(std::string(DATASET_PATH) + std::string("images/22678495_60995d51033e24b8_MG_R_ML_ANON.tif"), CV_LOAD_IMAGE_UNCHANGED);
+        images.push_back(dummy);
+        dummy = cv::imread(std::string(DATASET_PATH) + std::string("masks/22678495_60995d51033e24b8_MG_R_ML_ANON.mask.png"), CV_LOAD_IMAGE_UNCHANGED);
+        masks.push_back(dummy);
+         */
         printf("Load done\n");
 
         for (int i = 0; i < images.size(); i++) {
 
             ///Flipping
 
-            cv::Mat img = images[i].clone(); float resizeFactor = 0.2;
+            cv::Mat img = images[i].clone();
+            //std::cout <<"dim finale. x: " <<img.cols <<" y: " <<img.rows <<" \n";
+
 
             if (masks[i].at<unsigned char>(30, 30) == 0) {
 
@@ -505,16 +568,18 @@ int main() {
 
             ///Finding ROI
 
+            cv::Mat roi = roiGen(img, masks[i]);// cv::Mat origin = roi.clone();
 
-            cv::Mat roi = roiGen(img, masks[i]);
-            //std::cout <<"cols: " <<roi.cols <<" rows: " <<roi.rows <<std::endl;
+            //std::cout <<"Roi prima ridimensionamento. x: " <<roi.cols <<" y: " <<roi.rows <<" \n";
             cv::resize(roi, roi, cv::Size(resizeFactor * roi.cols, resizeFactor * roi.rows));
-            // aia::imshow("roi", roi, true, 0.20);
+            //std::cout <<"Roi dopo ridimensionamento. x: " <<roi.cols <<" y: " <<roi.rows <<" \n";
+
+            //aia::imshow("roi", roi);
 
             //Mean Shift Filter
             cv::Mat origin = roi.clone();
             cv::fastNlMeansDenoising(roi, roi, 15);
-            int hs = 16, hr = 16;
+            int hs = 24, hr = 10;
             //aia::imshow("roi", roi);
             cv::cvtColor(roi, roi, CV_GRAY2BGR);
             cv::pyrMeanShiftFiltering(roi, roi, hs, hr, 0);
@@ -523,47 +588,30 @@ int main() {
 
             //separateRegions(roi);
 
-            std::vector<std::vector<cv::Point> > contours = myWatershed(roi, origin);
-            cv::Mat bin = cv::Mat(origin.rows, origin.cols, CV_8U, cv::Scalar(0));
+            std::vector<std::vector<cv::Point> > goodContour = myWatershed(roi, origin);
 
-            for (int i = 0; i < contours.size(); i++) {
+            // crateMask
+            cv::Mat bin = createMask(roi, goodContour);
 
-                cv::drawContours(bin, contours, i, cv::Scalar(255), 1);
-            }
+            //std::cout <<"Maschera prima ridimensionamento. x: " <<bin.cols <<" y: " <<bin.rows <<" \n";
 
-//            aia::imshow(" contours", bin);
+            // restore Size
 
-            for (int i = 0; i < contours[1].size(); i++) {
+            //aia::imshow("bin", bin); getchar();
 
-                cv::Point p = contours[1][i];
 
-                for (int x = 0; x < p.x; x++) {
+            cv::resize(bin, bin, cv::Size(roi.cols/resizeFactor, roi.rows/resizeFactor));
 
-                    bin.at<unsigned char>(p.y, x) = 255;
-                }
-            }
-           // aia::imshow("prima resize", bin);
-//	aia::imshow("contours", bin);
+            bin = 255 - bin;
 
-            cv::resize(bin, bin, cv::Size(roi.cols/resizeFactor,  roi.rows/resizeFactor));
-            std::cout <<"cols: " <<bin.cols <<" rows: " <<bin.rows <<std::endl;
-            //aia::imshow("resize", bin);
-            cv::Mat result = cv::Mat(img.rows, img.cols, CV_8U, cv::Scalar(0));
+            cv::morphologyEx(bin, bin, CV_MOP_DILATE, cv::getStructuringElement(CV_SHAPE_ELLIPSE, cv::Size(43,43)));
 
-            for (int y = 0; y < bin.rows; y++) {
+            //std::cout <<"Maschera dopo ridimensionamento. x: " <<bin.cols <<" y: " <<bin.rows <<" \n";
+            cv::Mat result = copyMask(bin, img.rows, img.cols);
 
-                unsigned char *yRowBin = bin.ptr<unsigned char>(y);
-                unsigned char *yRowRes = result.ptr<unsigned char>(y);
 
-                for (int x = 0; x < bin.cols; x++) {
 
-                    if (yRowBin[x] == 255) {
-
-                        yRowRes[x] = 255;
-                    }
-                }
-            }
-
+            //std::cout <<"Dimensione result. x: " <<result.cols <<" y: " <<result.rows <<" \n";
             if (toFlip) {
 
                 cv::flip(result, result, 1);
@@ -571,9 +619,9 @@ int main() {
                 toFlip = false;
             }
 
-            //cv::imwrite("C:/Users/giorgio/Desktop/bbb.tif", result);
-            printf("%d \n", i);
+
             results.push_back(result);
+            std::cout <<i <<"\n";
         }
 
         std::vector <cv::Mat> visual_results;
