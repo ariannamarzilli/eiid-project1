@@ -1,19 +1,14 @@
-#include <opencv2/core/mat.hpp>
-#include <opencv2/imgcodecs.hpp>
-#include <opencv/cv.hpp>
-#include <iostream>
-#include "3rdparty/aiacommon/aiaConfig.h"
-#include "3rdparty/ucascommon/ucasExceptions.h"
-#include "3rdparty/ucascommon/ucasFileUtils.h"
-#include "3rdparty/ucascommon/ucasImageUtils.h"
+// include aia and ucas utility functions
+#include "aiaConfig.h"
+#include "ucasConfig.h"
+#include <opencv2\photo.hpp>
+
 
 // include my project functions
+#include "functions.h"
 
-
-#ifndef CV_CAST_8U
-#define CV_CAST_8U(t) (uchar)(!((t) & ~255) ? (t) : (t) > 0 ? 255 : 0)
-#endif
-
+#define PATH "C:/Users/pc/Documents/Universita/primo_anno_secondo_semestre/EIID/project/AIA-Retinal-Vessel-Segmentation/datasets/STARE/"
+#define CANNY_THRESHOLD 30
 
 // retrieves and loads all images within the given folder and having the given file extension
 std::vector < cv::Mat > getImagesInFolder(std::string folder, std::string ext = ".tif", bool force_gray = false) throw (aia::error)
@@ -181,170 +176,364 @@ double accuracy(
 
 cv::Mat rotate(cv::Mat src, double angle) {
 
-    cv::Mat dst;
-    cv::Point2f pt(src.cols/2., src.rows/2.);
-    cv::Mat r = cv::getRotationMatrix2D(pt, angle, 1.0);
-    cv::warpAffine(src, dst, r, cv::Size(src.cols, src.rows));
-    return dst;
+	cv::Mat dst;
+	cv::Point2f pt(src.cols/2., src.rows/2.);
+	cv::Mat r = cv::getRotationMatrix2D(pt, angle, 1.0);
+	cv::warpAffine(src, dst, r, cv::Size(src.cols, src.rows));
+	return dst;
 }
 
+namespace eiid {
 
-int main()
+	using namespace cv;
+
+void equalizeHistWithMask(const Mat1b& src, Mat& dst, Mat1b mask = Mat1b())
 {
-    try {
-        cv::Mat image = cv::imread("/Users/Mariangela/Desktop/UniversitÃ /Magistrale/1 anno - 2 semestre/EIID/AIA-Retinal-Vessel-Segmentation/datasets/DRIVE/images/01.tif", CV_LOAD_IMAGE_UNCHANGED);
-        cv::Mat mask = cv::imread("/Users/Mariangela/Desktop/UniversitÃ /Magistrale/1 anno - 2 semestre/EIID/AIA-Retinal-Vessel-Segmentation/datasets/DRIVE/masks/01_mask.tif", CV_LOAD_IMAGE_UNCHANGED);
-        cv::Mat ground_truth = cv::imread("/Users/Mariangela/Desktop/UniversitÃ /Magistrale/1 anno - 2 semestre/EIID/AIA-Retinal-Vessel-Segmentation/datasets/DRIVE/images/01.tif", CV_LOAD_IMAGE_UNCHANGED);
+    int cnz = countNonZero(mask);
+    if (mask.empty() || ( cnz == src.rows*src.cols))
+    {
+        equalizeHist(src, dst);
+        return;
+    }
 
-        std::vector<cv::Mat> channels;
+    dst = src.clone();
 
-        cv::split(image, channels);
-        cv::Mat green_channel = channels[1];
-
-        green_channel.convertTo(green_channel, CV_8U);
-        ground_truth.convertTo(ground_truth, CV_8U);
-
-
-        // NOISE REDUCTION
-
-        cv::fastNlMeansDenoising(green_channel, green_channel, 3);
-
-        aia::imshow("denoising", green_channel);
-
-        // TOP-HAT TRANSFORM
-
-        cv::Mat green_channel_reverse = 255 - green_channel;
-
-        //aia::imshow("green_channel_reverse", green_channel_reverse);
-
-        cv::Mat dest, THTransform;
-
-        cv::morphologyEx(green_channel_reverse, dest, cv::MORPH_TOPHAT, cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(20, 20)));
-
-        THTransform = green_channel_reverse - dest;
-
-        cv::Mat foundRegion = 10 * (green_channel_reverse - THTransform);
-
-        aia::imshow("found region", THTransform);
-
-
-        // SHARPENING
-/*
-        int sharpening_factor_x10 = 5;
-
-        float k = sharpening_factor_x10/10.0f;
-
-        cv::Mat laplacian(3, 3, CV_32F);
-        laplacian.at<float> (0,0) = -k;
-        laplacian.at<float> (0,1) = -k;
-        laplacian.at<float> (0,2) = -k;
-        laplacian.at<float> (1,0) = -k;
-        laplacian.at<float> (1,1) = 1 + 8 * k;
-        laplacian.at<float> (1,2) = -k;
-        laplacian.at<float> (2,0) = -k;
-        laplacian.at<float> (2,1) = -k;
-        laplacian.at<float> (2,2) = -k;
-
-        // a better option is to cut the peaks directly by storing
-        // the result in 8U
-        cv::filter2D(foundRegion, foundRegion, CV_8U, laplacian);
-
-        aia::imshow("sharpening", foundRegion);
-*/
-
-
-
-        // CLAHE
-/*
-         int block_size = 8;
-
-         // instance and apply CLAHE algorithm
-         cv::Ptr<cv::CLAHE> clahe = cv::createCLAHE();
-         clahe->setTilesGridSize(cv::Size(foundRegion.cols/block_size, foundRegion.rows/block_size));
-         clahe->apply(foundRegion, foundRegion);
-
-        aia::imshow("CLAHE", foundRegion);
-*/
-
-        // RECONSTRUCTION
-        cv::Mat tophat = foundRegion.clone();
-        cv::Mat marker;
-        cv::morphologyEx(green_channel_reverse, marker, CV_MOP_OPEN, cv::getStructuringElement(CV_SHAPE_ELLIPSE, cv::Size(50,50)));
-        aia::imshow("Marker", marker);
-        //cv::imwrite(std::string(EXAMPLE_IMAGES_PATH) + "/galaxy_marker.jpg", marker);
-
-
-        cv::Mat marker_prev;
-        int it = 0;
-        do
-        {
-            // make a backup copy of the previous marker
-            marker_prev = marker.clone();
-
-            // geodesic dilation ( = dilation + pointwise minimum with mask)
-            cv::morphologyEx(marker, marker, CV_MOP_DILATE, cv::getStructuringElement(CV_SHAPE_RECT, cv::Size(3,3)));
-            marker = cv::min(marker, green_channel_reverse);
-
-            // display reconstruction in progress
-            printf("it = %d\n", ++it);
-            //aia::imshow("marker", marker);
-
-        }
-        while( cv::countNonZero(marker - marker_prev) > 0) ;
-
-        aia::imshow("Reconstructed", marker);
-        foundRegion = (green_channel_reverse - marker);
-        aia::imshow("G - reconstructed", foundRegion);
-
-        foundRegion = 0.30 * tophat + 0.70 * foundRegion;
-
-        aia::imshow("somma pesata", foundRegion);
-
-        // ESTRAZIONE FOV
-
-        for (int y = 0; y < foundRegion.rows; y++) {
-
-            unsigned char* yRowFound = foundRegion.ptr<unsigned char>(y);
-            unsigned char* yRowMask = mask.ptr<unsigned char>(y);
-
-            for (int x = 0; x < foundRegion.cols; x++) {
-
-                if (yRowMask[x] != 255) {
-
-                    yRowFound[x] = 0;
-                }
+    // Histogram
+    vector<int> hist(256,0);
+    for (int r = 0; r < src.rows; ++r) {
+        for (int c = 0; c < src.cols; ++c) {
+            if (mask(r, c)) {
+                hist[src(r, c)]++;
             }
         }
-
-        aia::imshow("internal mask", foundRegion);
-
-        // NOISE REDUCTION
-
-        cv::fastNlMeansDenoising(foundRegion, foundRegion, 3);
-        aia::imshow("noise reduction", foundRegion);
-
-
-        //THRESHOLDING
-
-        cv::Mat thresholded;
-
-        cv::threshold(foundRegion, thresholded, 0, 255, CV_THRESH_BINARY | CV_THRESH_OTSU);
-
-        aia::imshow("binarizzazione", thresholded);
-
-        //aia::imshow("opening", thresholded);
-
-        return 1;
-
-    }
-    catch (aia::error &ex)
-    {
-        std::cout << "EXCEPTION thrown by " << ex.getSource() << "source :\n\t|=> " << ex.what() << std::endl;
-    }
-    catch (ucas::Error &ex)
-    {
-        std::cout << "EXCEPTION thrown by unknown source :\n\t|=> " << ex.what() << std::endl;
     }
 
+    // Cumulative histogram
+    float scale = 255.f / float(cnz);
+    vector<uchar> lut(256);
+    int sum = 0;
+    for (int i = 0; i < hist.size(); ++i) {
+        sum += hist[i];
+        lut[i] = saturate_cast<uchar>(sum * scale);
+    }
+
+    // Apply equalization
+    for (int r = 0; r < src.rows; ++r) {
+        for (int c = 0; c < src.cols; ++c) {
+            if (mask(r, c)) {
+                dst.at<unsigned char>(r, c) = lut[src(r,c)];
+            }
+        }
+    }
+}
+}
+
+// Metodo per l'individuazione del contorno relativo al fondo oculare
+// Input : vettore di contorni (vettore di vettore di punti)
+// Output : posizione del contorno di interesse
+
+int findGoodContourn(std::vector<std::vector<cv::Point>> contours) {
+
+	int goodCont;
+
+	// Avalizzo i contorni: se uno ha una lunghezza maggiore di 1000 unità (termine eurstico, il contorno da considerare deve essete "molto grande") lo considero
+	for (int i = 0; i < contours.size(); i++) {
+
+		if (cv::arcLength(contours[i], true) > 1000) {
+
+			goodCont = i;
+		}
+	}
+
+	/*int goodCont = 0; int maxLength = cv::arcLength(contours[goodCont], true);
+
+	for (int i = 0; i < contours.size(); i++) {
+
+		if (cv::arcLength(contours[i], true) > maxLength) {
+
+			maxLength = cv::arcLength(contours[i], true);
+			goodCont = i;
+		}
+	}*/
+
+	return goodCont;
+}
+
+// Metodo per l'indviduazione dei punt estrami di un controno 
+
+// Input : vettore di contorni attuali
+// Output : Punti estremi del contorno no chiuso
+//        : Variabile booleana che specifica se un contorno è chiuso o meno
+
+void closeContourn(std::vector<cv::Point> contours, std::vector<cv::Point> &interestPoints, bool &close, cv::Mat img) {
+
+	cv::Point prevPos = contours[0];
+	cv::Point nextPos = contours[2];
+	int cont = 0;
+
+	// Itero parendo dal secondo elemnto del contorno e analizzo la posizione precedente e successiva a quella attuale: se tali punti sono gli stassi
+	// ho individuato un estremo, quindi memorizzo tale posizione ed incremento un contatore. Trovato il secondo punto il contatore sarà a 2 e il ciclo trìermina.
+	// L'iterazione si basa sul modo con cui il metodo cv::findContours(...) individua i punti del contorno.
+	for (int i = 1; i < contours.size() - 2; i++) {
+
+	
+		if (nextPos == prevPos) {
+
+			interestPoints.push_back(contours[i]); //std::cout << contours[i] << std::endl;
+			cont++;
+
+			if(cont > 2) {
+
+				close = false;
+				break;
+			}
+		}
+
+		nextPos = contours[i + 2];
+		prevPos = contours[i];
+	}
+
+	// Se cont = 2 ho trovato un contorno aperto
+
+	if (cont == 2) {
+
+		close = true;
+	}
+}
+
+// Metodo per la costruzione di una maschera
+// Input : immagine di partenza (per le dimesioni)
+//       : contorno del fondo oculare
+// Output : immagine maschera binaria
+
+cv::Mat createMask(const cv::Mat& img, std::vector<cv::Point> contours) {
+
+	cv::Mat resultBin = img.clone();
+
+	// Per ogni pixel dell'immagine se è contenuto nel contorno lo rendo bianco altrimenti lo rendo nero
+
+	for (int y = 0; y < resultBin.rows; y++) {
+
+		unsigned char* yRow = resultBin.ptr<unsigned char>(y);
+
+		for (int x = 0; x < resultBin.cols; x++) {
+
+			if (cv::pointPolygonTest(contours, cv::Point2f(x, y), false) >= 0) {
+
+				yRow[x] = 255;
+			} else {
+
+				yRow[x] = 0;
+				
+			}
+		}
+	}
+
+	return resultBin;
+}
+
+int maxContourn(std::vector<std::vector<cv::Point>> contours) {
+
+	int pos = 0; 
+
+	for (int i = 1; i < contours.size(); i++) {
+
+		if(cv::arcLength(contours[i], false) > cv::arcLength(contours[pos], false)) {
+
+			pos = i;
+		}
+	}
+
+	return pos;
+}
+
+// Metodo per la generazione di un'immagine maschera
+
+// Input : immagine di cui estrarre la maschera
+// Output : immagine maschera
+
+cv::Mat maskGenerating(const cv::Mat& image) {
+
+	cv::Mat img = image.clone(); //aia::imshow("Image", img); 
+
+	// MORPHOLOGICAL SMOOTHING 
+	// Viene applicato un morphological smoothing per ridurre l'intensità dei vasi sanguignei pur mantenendo il contorno della maschera.
+
+	int k = 11;
+
+	cv::morphologyEx(img, img, CV_MOP_OPEN, cv::getStructuringElement(CV_SHAPE_RECT, cv::Size(k,k)));
+	cv::morphologyEx(img, img, CV_MOP_CLOSE, cv::getStructuringElement(CV_SHAPE_RECT, cv::Size(k,k)));
+	//aia::imshow("Morphological Smoothing", img);
+
+	cv::Mat imageEdges; int thresholdCanny = CANNY_THRESHOLD;
+	cv::GaussianBlur(img, img, cv::Size(3,3), 3,3);
+	cv::Canny(img, imageEdges, thresholdCanny, 3 * thresholdCanny);
+	//aia::imshow(" ", imageEdges);
+
+	std::vector<std::vector<cv::Point>> contoursEdges;
+	cv::findContours(imageEdges, contoursEdges, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_NONE);
+	int rightContourn = maxContourn(contoursEdges);
+	//cv::drawContours(img, contoursEdges, rightContourn, cv::Scalar(255), 2); //aia::imshow(" ", img);
+
+	std::vector<cv::Point> interestPoints; bool toClose = false;
+	closeContourn(contoursEdges[rightContourn], interestPoints, toClose, imageEdges);
+
+	if (toClose == true) {
+
+		cv::line(imageEdges, interestPoints[0], interestPoints[1], cv::Scalar(255), 1);
+		//aia::imshow(" ", img);
+
+		// IF THE CONTORN WAS OPEN I MUST RE-COMPUTE THE CONTOURS
+
+		contoursEdges.clear();
+
+		cv::findContours(imageEdges, contoursEdges, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_NONE);
+		rightContourn = findGoodContourn(contoursEdges); 
+	}
+
+	cv::Mat bin = createMask(img, contoursEdges[rightContourn]);
+	
+	return bin;
+
+	//cv::fillConvexPoly(bin, contoursEdges[rightContourn], cv::Scalar(255)); aia::imshow("1", bin);
+
+	/*
+	// GRADIENT IMAGE
+	// Mi ricavo l'immagine gradiente dalla quale verrà effettuata l'estrazione dei contorni
+
+	cv::Mat gradientImage = img.clone();
+	cv::morphologyEx(img, gradientImage, CV_MOP_GRADIENT, cv::getStructuringElement(CV_SHAPE_RECT, cv::Size(3, 3)));
+
+	// CANNY
+	// Applico il metodo di Canny per estrarre il contorno dominate della maschera. Non è stato applicato prima un gaussian blure, come previsto
+	// dal metodo, data la struttra "semplice" dell'immagine. (Sono contorni chiari su sfondo scuro)
+
+	cv::Mat imageEdges; int thresholdCanny = CANNY_THRESHOLD;
+	//cv::GaussianBlur(gradientImage, gradientImage, cv::Size(3,3), 3,3);
+	cv::Canny(gradientImage, imageEdges, thresholdCanny, 3 * thresholdCanny);
+	//aia::imshow(" ", imageEdges);
+
+	// GRADIENT IMAGE BINARIZED
+	// Applico un thresholding secondo il metodo Otsu sull'immagine gradiente di partenza.
+
+	cv::Mat gradientImageBin;
+	cv::threshold(gradientImage, gradientImageBin, 0, 255, CV_THRESH_BINARY | CV_THRESH_OTSU);
+	//aia::imshow("Gradient image", gradientImageBin);	
+
+	// FIND CONTOURS
+	// Estraggo i contorni sia dall'immagine ricavata tramite l'algoritmo di Canny si da quella ricavata tramite la binarizzazione dell'immagine gradiente.
+
+	std::vector<std::vector<cv::Point>> contoursBin;
+	std::vector<std::vector<cv::Point>> contoursEdges;
+	cv::findContours(gradientImageBin, contoursBin, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_NONE);
+	cv::findContours(imageEdges, contoursEdges, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_NONE);
+
+	int goodContBin = findGoodContourn(contoursBin);
+	int goodContEdge = findGoodContourn(contoursEdges); 
+
+	// CLOSE OPEN CONTOURS
+	// Può succedere che, a causa del modo in cui è stata acquisita l'imagine, non si ottenga un contono del fondo oculare chiuso. E' necessario
+	// un metodo che chida il contorno individuato
+	
+	std::vector<cv::Point> interestPoints; bool toClose = false;
+	closeContourn(contoursEdges[goodContEdge], interestPoints, toClose, imageEdges);
+
+	if (toClose == true) {
+
+		cv::line(imageEdges, interestPoints[0], interestPoints[1], cv::Scalar(255), 1);
+		//aia::imshow(" ", img);
+
+		// IF THE CONTORN WAS OPEN I MUST RE-COMPUTE THE CONTOURS
+
+		contoursEdges.clear();
+
+		cv::findContours(imageEdges, contoursEdges, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_NONE);
+		goodContEdge = findGoodContourn(contoursEdges); 
+	}
+
+	// POINT POLYGON TEST
+	// Costruisco l'immagine maschera a partire dai contorni estratti in precedenza.
+
+	cv::Mat resultBin = cv::Mat(img.rows, img.cols, CV_8U);
+	resultBin = createMask(img, contoursBin[goodContBin]);
+
+	//aia::imshow("solo bin", resultBin, false);
+
+	cv::Mat resultEdge = cv::Mat(img.rows, img.cols, CV_8U);
+	resultEdge = createMask(img, contoursEdges[goodContEdge]);
+
+	//aia::imshow("bn + edge", resultEdge, false);
+
+	// L'immagine risultane è la somma delle due maschere estratte. Questo perchè, data la soglia di threshold, il risuato otteuto con Canny può produrre
+	// contorni che si chidono su loro stessi per cui il contono non verrebbe considerato chiuso "chiuso" cosa che con capita per le immagini binarie. Di contro,
+	// in altri casi, sono i contorni delle immagini binarie a non essere ben definiti per cui è necesario usare i risultati di Canny. Aumentare o ridurre la
+	// soglia di threshold pùo portare a risulatai non corretti.
+	
+	img =  resultBin + resultEdge;
+	//aia::imshow("Mask", img);
+	*/
+	//return img;
+}
+
+// Metodo per la generazione di immagni maschere per un dataset
+
+// Input : stringa che defnisce la posizione del dataset
+// Output : maschere del dataset
+
+void generateMasksDataset(std::string str) {
+
+	std::vector <cv::Mat> images = getImagesInFolder(str + "images", ".ppm");
+	std::vector<cv::Mat> masks; 
+
+	for (int i = 0; i < images.size(); i++) {
+		
+		std::vector<cv::Mat> channels;
+
+		// Estraggo il canale verde dell'immagine
+		cv::split(images[i], channels);
+		cv::Mat red_channel = channels[2];
+		red_channel.convertTo(red_channel, CV_8U);
+
+		// Memorizzo la maschera ricavata
+		masks.push_back(maskGenerating(red_channel));
+
+		// Salvo l'immagine
+		std::string pathName = str + "masks2/" + std::to_string(i+1) + ".tif";
+		cv::imwrite(pathName, masks[i]);
+
+		printf("Image saved %d\n", i + 1);
+	}
+}
+
+int main() 
+{
+	try {
+
+		// MASK GENERATING
+
+		generateMasksDataset(std::string(PATH));
+
+		// 1 MASK GENERATING TEST
+		
+		/*cv::Mat image = cv::imread(std::string(PATH) + std::string("images/im0044.ppm"), CV_LOAD_IMAGE_UNCHANGED);
+		std::vector<cv::Mat> channels;
+
+		cv::split(image, channels);
+		cv::Mat red_channel = channels[2];
+		red_channel.convertTo(red_channel, CV_8U);
+
+		cv::Mat mask = maskGenerating(red_channel);*/
+
+		return 1;
+
+	}
+	catch (aia::error &ex)
+	{
+		std::cout << "EXCEPTION thrown by " << ex.getSource() << "source :\n\t|=> " << ex.what() << std::endl;
+	}
+	catch (ucas::Error &ex)
+	{
+		std::cout << "EXCEPTION thrown by unknown source :\n\t|=> " << ex.what() << std::endl;
+	}
 }
 
